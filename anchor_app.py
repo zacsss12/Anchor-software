@@ -10,44 +10,35 @@ from mnemonic import Mnemonic  # pip install mnemonic
 
 import anchor_core as core
 
+# Optional: system baseline (Linux/Arch)
+try:
+    import anchor_system as sysanchor
+except Exception:
+    sysanchor = None
+
 APP_VERSION = "v0.3.2"
 
 
 def canonical_seed_from_text(text_widget: tk.Text) -> str:
-    raw = text_widget.get("1.0", "end-1c")
-    return " ".join(raw.lower().split())
-
-
-def safe_basename(p: str) -> str:
-    return Path(p).name if p else "(no file selected)"
+    raw = text_widget.get("1.0", "end").strip()
+    words = raw.lower().split()
+    return " ".join(words)
 
 
 def load_logo_scaled(path: Path, target_px: int = 64):
-    """
-    Load logo and force display <= target_px using PhotoImage.subsample().
-    Prevents 'giant logo' even if PNG is huge. No external deps.
-    """
-    if not path.exists():
-        return None
     try:
         img = tk.PhotoImage(file=str(path))
+        # If image bigger than target, subsample; if smaller, keep.
+        w, h = img.width(), img.height()
+        if w <= 0 or h <= 0:
+            return None
+        factor = max(1, int(max(w, h) / target_px))
+        return img.subsample(factor, factor)
     except Exception:
         return None
 
-    w, h = img.width(), img.height()
-    if w <= 0 or h <= 0:
-        return img
-    if w <= target_px and h <= target_px:
-        return img
-
-    factor = max(1, (max(w, h) + target_px - 1) // target_px)  # ceil(max/target)
-    while (w // factor) > target_px or (h // factor) > target_px:
-        factor += 1
-    return img.subsample(factor, factor)
-
 
 class ScrollFrame(tk.Frame):
-    """Canvas + inner frame for real scrolling + wheel/trackpad support."""
     def __init__(self, master, bg: str):
         super().__init__(master, bg=bg)
 
@@ -85,20 +76,15 @@ class ScrollFrame(tk.Frame):
             widget.unbind_all("<Button-5>")
 
         def _on_mousewheel(event):
-            delta = event.delta
-            if delta == 0:
-                return
-            if abs(delta) >= 120:
-                steps = int(-delta / 120)
-            else:
-                steps = -1 if delta > 0 else 1
-            self.canvas.yview_scroll(steps, "units")
+            # Windows/macOS
+            delta = -1 * int(event.delta / 120)
+            self.canvas.yview_scroll(delta, "units")
 
         def _on_linux_up(_event):
-            self.canvas.yview_scroll(-1, "units")
+            self.canvas.yview_scroll(-3, "units")
 
         def _on_linux_down(_event):
-            self.canvas.yview_scroll(1, "units")
+            self.canvas.yview_scroll(3, "units")
 
         widget.bind("<Enter>", _on_enter)
         widget.bind("<Leave>", _on_leave)
@@ -106,14 +92,7 @@ class ScrollFrame(tk.Frame):
 
 class AnchorApp:
     def __init__(self, root: tk.Tk):
-        self.root = root
-
-        # keep UI scale stable (avoid "everything huge")
-        try:
-            root.tk.call("tk", "scaling", 1.0)
-        except Exception:
-            pass
-
+        self.master = root
         root.title(f"Anchor ({APP_VERSION})")
         root.minsize(980, 620)
 
@@ -128,11 +107,10 @@ class AnchorApp:
         self.accent_fg = "#052322"
 
         # ✅ FIX: readable button text across macOS/Windows
-        # macOS (Darwin): keep dark text (mac sometimes draws “white buttons”)
-        # Windows/Linux: use light text so it’s visible on dark buttons
         self.btn_text_on_white = "#0b0f14" if platform.system() == "Darwin" else self.text
 
         self.safe_mode = tk.BooleanVar(value=True)
+        self.section = tk.StringVar(value="File")
 
         self.file_path = ""
         self.proof_path = ""
@@ -149,15 +127,12 @@ class AnchorApp:
     def _font(self, size=12, weight="normal"):
         return ("Avenir", size, weight)
 
-    def _panel_box(self, parent, title_text: str) -> tk.Frame:
-        wrapper = tk.Frame(parent, bg=self.border)
-        wrapper.pack(fill="x", padx=18, pady=10)
+    def _panel_box(self, parent, title: str):
+        box = tk.Frame(parent, bg=self.panel, highlightbackground=self.border, highlightthickness=1)
+        box.pack(fill="x", padx=18, pady=10)
 
-        box = tk.Frame(wrapper, bg=self.panel)
-        box.pack(fill="both", padx=1, pady=1)
-
-        title = tk.Label(box, text=title_text, fg=self.text, bg=self.panel, font=self._font(13, "bold"))
-        title.pack(anchor="w", padx=14, pady=(10, 6))
+        lbl = tk.Label(box, text=title, fg=self.text, bg=self.panel, font=self._font(13, "bold"))
+        lbl.pack(anchor="w", padx=14, pady=(10, 0))
         return box
 
     def _build_ui(self):
@@ -185,6 +160,26 @@ class AnchorApp:
         right = tk.Frame(header, bg=self.bg)
         right.pack(side="right")
 
+        # Section tabs (top-right)  ✅ (esto es lo del rectángulo)
+        tabs = tk.Frame(right, bg=self.bg)
+        tabs.pack(side="left", padx=(0, 14))
+
+        self.tab_btn_file = tk.Button(
+            tabs, text="File", command=lambda: self._show_section("File"),
+            bg=self.accent, fg=self.accent_fg,
+            activebackground=self.accent, activeforeground=self.accent_fg,
+            relief="flat", padx=12, pady=7, font=self._font(11, "bold")
+        )
+        self.tab_btn_file.pack(side="left")
+
+        self.tab_btn_system = tk.Button(
+            tabs, text="System", command=lambda: self._show_section("System"),
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
+            relief="flat", padx=12, pady=7, font=self._font(11, "bold")
+        )
+        self.tab_btn_system.pack(side="left", padx=(8, 0))
+
         chk = tk.Checkbutton(
             right, text="Safe mode", variable=self.safe_mode,
             bg=self.bg, fg=self.muted, activebackground=self.bg, activeforeground=self.muted,
@@ -200,19 +195,60 @@ class AnchorApp:
         )
         info.pack(side="left")
 
-        self._panel_seed(inner)
-        self._panel_file_proof(inner)
-        self._panel_actions(inner)
-        self._panel_status(inner)
+        # Sections container
+        self.section_container = tk.Frame(inner, bg=self.bg)
+        self.section_container.pack(fill="both", expand=True)
+        self.section_container.grid_columnconfigure(0, weight=1)
+
+        self.file_section = tk.Frame(self.section_container, bg=self.bg)
+        self.system_section = tk.Frame(self.section_container, bg=self.bg)
+        self.file_section.grid(row=0, column=0, sticky="nsew")
+        self.system_section.grid(row=0, column=0, sticky="nsew")
+
+        # File section (original)
+        self._panel_seed(self.file_section)
+        self._panel_file_proof(self.file_section)
+        self._panel_actions(self.file_section)
+        self._panel_status(self.file_section)
+
+        # System section (new)
+        self._panel_system(self.system_section)
+
+        # Default view
+        self._show_section("File")
+
+    def _show_section(self, name: str):
+        """Switch between top-level sections (File / System)."""
+        self.section.set(name)
+
+        if name == "System":
+            self.system_section.tkraise()
+            self.tab_btn_file.configure(
+                bg=self.panel2, fg=self.btn_text_on_white,
+                activebackground=self.panel2, activeforeground=self.btn_text_on_white
+            )
+            self.tab_btn_system.configure(
+                bg=self.accent, fg=self.accent_fg,
+                activebackground=self.accent, activeforeground=self.accent_fg
+            )
+        else:
+            self.file_section.tkraise()
+            self.tab_btn_system.configure(
+                bg=self.panel2, fg=self.btn_text_on_white,
+                activebackground=self.panel2, activeforeground=self.btn_text_on_white
+            )
+            self.tab_btn_file.configure(
+                bg=self.accent, fg=self.accent_fg,
+                activebackground=self.accent, activeforeground=self.accent_fg
+            )
 
     def _panel_seed(self, parent):
         box = self._panel_box(parent, "1) Seed (24 words)")
 
-        hint = tk.Label(
+        tk.Label(
             box, text="Paste your 24-word seed here (not stored):",
-            fg=self.muted, bg=self.panel, font=self._font(12)
-        )
-        hint.pack(anchor="w", padx=14)
+            fg=self.muted, bg=self.panel, font=self._font(11)
+        ).pack(anchor="w", padx=14, pady=(8, 0))
 
         self.seed_text = tk.Text(
             box, height=3, wrap="word",
@@ -228,77 +264,74 @@ class AnchorApp:
         )
         self.seed_fp_label.pack(anchor="w", padx=14, pady=(0, 8))
 
-        # ✅ New: Generate + Copy buttons
         btn_row = tk.Frame(box, bg=self.panel)
-        btn_row.pack(anchor="w", padx=14, pady=(0, 10))
+        btn_row.pack(fill="x", padx=14, pady=(0, 12))
 
-        btn_gen = tk.Button(
+        gen_btn = tk.Button(
             btn_row, text="Generate new 24-word seed", command=self._generate_seed,
             bg=self.panel2, fg=self.btn_text_on_white,
             activebackground=self.panel2, activeforeground=self.btn_text_on_white,
             relief="flat", padx=12, pady=8, font=self._font(11, "bold")
         )
-        btn_gen.pack(side="left")
+        gen_btn.pack(side="left")
 
-        btn_copy = tk.Button(
+        copy_btn = tk.Button(
             btn_row, text="Copy seed", command=self._copy_seed,
             bg=self.panel2, fg=self.btn_text_on_white,
             activebackground=self.panel2, activeforeground=self.btn_text_on_white,
             relief="flat", padx=12, pady=8, font=self._font(11, "bold")
         )
-        btn_copy.pack(side="left", padx=(10, 0))
+        copy_btn.pack(side="left", padx=(10, 0))
 
     def _panel_file_proof(self, parent):
         box = self._panel_box(parent, "2) File + Proof")
 
-        row1 = tk.Frame(box, bg=self.panel)
-        row1.pack(fill="x", padx=14, pady=(6, 6))
+        row = tk.Frame(box, bg=self.panel)
+        row.pack(fill="x", padx=14, pady=(8, 8))
 
         btn_file = tk.Button(
-            row1, text="Choose file…", command=self._choose_file,
+            row, text="Choose file...", command=self._choose_file,
             bg=self.panel2, fg=self.btn_text_on_white,
             activebackground=self.panel2, activeforeground=self.btn_text_on_white,
-            relief="flat", padx=12, pady=10, font=self._font(12, "bold")
+            relief="flat", padx=12, pady=8, font=self._font(11, "bold")
         )
         btn_file.pack(side="left")
 
-        self.file_label = tk.Label(row1, text="(no file selected)", fg=self.muted, bg=self.panel, font=self._font(12))
+        self.file_label = tk.Label(row, text="(no file selected)", fg=self.muted, bg=self.panel, font=self._font(11))
         self.file_label.pack(side="left", padx=(12, 0))
 
         row2 = tk.Frame(box, bg=self.panel)
-        row2.pack(fill="x", padx=14, pady=(8, 6))
+        row2.pack(fill="x", padx=14, pady=(0, 6))
 
-        tk.Label(row2, text="Proof path:", fg=self.muted, bg=self.panel, font=self._font(12)).pack(side="left")
-
-        self.proof_entry = tk.Entry(
-            row2, bg=self.panel2, fg=self.text, insertbackground=self.text, relief="flat", font=self._font(12)
-        )
-        self.proof_entry.pack(side="left", fill="x", expand=True, padx=(10, 10), ipady=6)
-
-        btn_load = tk.Button(
-            row2, text="Load proof…", command=self._load_proof,
-            bg=self.panel2, fg=self.btn_text_on_white,
-            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
-            relief="flat", padx=12, pady=8, font=self._font(12, "bold")
-        )
-        btn_load.pack(side="left", padx=(0, 8))
-
-        btn_saveas = tk.Button(
-            row2, text="Save as…", command=self._save_proof_as,
-            bg=self.panel2, fg=self.btn_text_on_white,
-            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
-            relief="flat", padx=12, pady=8, font=self._font(12, "bold")
-        )
-        btn_saveas.pack(side="left")
+        tk.Label(row2, text="Proof path:", fg=self.muted, bg=self.panel, font=self._font(11)).pack(side="left")
+        self.proof_path_label = tk.Label(row2, text="—", fg=self.text, bg=self.panel, font=self._font(11))
+        self.proof_path_label.pack(side="left", padx=(8, 0))
 
         row3 = tk.Frame(box, bg=self.panel)
-        row3.pack(fill="x", padx=14, pady=(4, 10))
+        row3.pack(fill="x", padx=14, pady=(0, 10))
 
-        self.proof_owner_label = tk.Label(
-            row3, text="Proof owner fingerprint: —",
-            fg=self.muted, bg=self.panel, font=self._font(12, "bold")
+        tk.Label(row3, text="Proof owner fingerprint:", fg=self.muted, bg=self.panel, font=self._font(11)).pack(side="left")
+        self.proof_fp_label = tk.Label(row3, text="—", fg=self.text, bg=self.panel, font=self._font(11, "bold"))
+        self.proof_fp_label.pack(side="left", padx=(8, 0))
+
+        btns = tk.Frame(box, bg=self.panel)
+        btns.pack(fill="x", padx=14, pady=(0, 12))
+
+        load_btn = tk.Button(
+            btns, text="Load proof...", command=self._load_proof,
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
+            relief="flat", padx=12, pady=8, font=self._font(11, "bold")
         )
-        self.proof_owner_label.pack(anchor="w")
+        load_btn.pack(side="right", padx=(10, 0))
+
+        save_btn = tk.Button(
+            btns, text="Save as...", command=self._save_proof_as,
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
+            relief="flat", padx=12, pady=8, font=self._font(11, "bold")
+        )
+        save_btn.pack(side="right")
 
     def _panel_actions(self, parent):
         box = self._panel_box(parent, "3) Actions")
@@ -316,11 +349,11 @@ class AnchorApp:
 
         btn_verify = tk.Button(
             row, text="VERIFY (file + proof.json)", command=self._do_verify,
-            bg=self.accent, fg=self.accent_fg,
-            activebackground=self.accent, activeforeground=self.accent_fg,
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
             relief="flat", padx=14, pady=12, font=self._font(12, "bold")
         )
-        btn_verify.pack(side="left", padx=(10, 0))
+        btn_verify.pack(side="left", padx=(12, 0))
 
         btn_diag = tk.Button(
             row, text="DIAGNOSE", command=self._do_diagnose,
@@ -328,18 +361,263 @@ class AnchorApp:
             activebackground=self.panel2, activeforeground=self.btn_text_on_white,
             relief="flat", padx=14, pady=12, font=self._font(12, "bold")
         )
-        btn_diag.pack(side="left", padx=(10, 0))
+        btn_diag.pack(side="left", padx=(12, 0))
+
+    # ----------------------------
+    # System baseline (Linux/Arch)
+    # ----------------------------
+
+    def _panel_system(self, parent):
+        box = self._panel_box(parent, "System (baseline + verify)")
+
+        hint = (
+            "Create a reproducible baseline of a folder (or / on Linux) and verify drift over time.\n"
+            "On Windows this section is limited; on Linux/Arch you can baseline '/'."
+        )
+        tk.Label(box, text=hint, fg=self.muted, bg=self.panel, justify="left", font=self._font(11)).pack(
+            anchor="w", padx=14, pady=(8, 10)
+        )
+
+        row = tk.Frame(box, bg=self.panel)
+        row.pack(fill="x", padx=14, pady=(0, 10))
+
+        tk.Label(row, text="Root path:", fg=self.text, bg=self.panel, font=self._font(12, "bold")).pack(side="left")
+        self.sys_root_var = tk.StringVar(value="/" if platform.system() == "Linux" else str(Path.home()))
+        self.sys_root_entry = tk.Entry(
+            row, textvariable=self.sys_root_var,
+            bg=self.panel2, fg=self.text, insertbackground=self.text,
+            relief="flat", font=self._font(12)
+        )
+        self.sys_root_entry.pack(side="left", fill="x", expand=True, padx=(10, 10))
+        tk.Button(
+            row, text="Browse...", command=self._browse_sys_root,
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
+            relief="flat", padx=12, pady=8, font=self._font(11, "bold")
+        ).pack(side="left")
+
+        row2 = tk.Frame(box, bg=self.panel)
+        row2.pack(fill="x", padx=14, pady=(0, 10))
+
+        self.sys_baseline_dir = tk.StringVar(value="")
+        tk.Label(row2, text="Baseline folder:", fg=self.text, bg=self.panel, font=self._font(12, "bold")).pack(side="left")
+        self.sys_baseline_label = tk.Label(
+            row2, textvariable=self.sys_baseline_dir,
+            fg=self.muted, bg=self.panel, font=self._font(11)
+        )
+        self.sys_baseline_label.pack(side="left", padx=(10, 10), fill="x", expand=True)
+
+        tk.Button(
+            row2, text="Choose...", command=self._choose_baseline_dir,
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
+            relief="flat", padx=12, pady=8, font=self._font(11, "bold")
+        ).pack(side="left")
+
+        row3 = tk.Frame(box, bg=self.panel)
+        row3.pack(fill="x", padx=14, pady=(8, 12))
+
+        tk.Button(
+            row3, text="CREATE BASELINE", command=self._do_system_baseline_create,
+            bg=self.accent, fg=self.accent_fg,
+            activebackground=self.accent, activeforeground=self.accent_fg,
+            relief="flat", padx=14, pady=12, font=self._font(12, "bold")
+        ).pack(side="left")
+
+        tk.Button(
+            row3, text="VERIFY BASELINE", command=self._do_system_baseline_verify,
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
+            relief="flat", padx=14, pady=12, font=self._font(12, "bold")
+        ).pack(side="left", padx=(12, 0))
+
+        note = "Baseline will create: baseline.manifest.jsonl + baseline.proof.json"
+        tk.Label(box, text=note, fg=self.muted, bg=self.panel, font=self._font(10)).pack(
+            anchor="w", padx=14, pady=(0, 10)
+        )
+
+        if sysanchor is None:
+            self.sys_root_entry.configure(state="disabled")
+            # no status panel yet if user starts on System tab; that's ok.
+
+    def _browse_sys_root(self):
+        chosen = filedialog.askdirectory(title="Choose root folder to baseline")
+        if chosen:
+            self.sys_root_var.set(chosen)
+
+    def _choose_baseline_dir(self):
+        chosen = filedialog.askdirectory(title="Choose folder to store baseline files")
+        if chosen:
+            self.sys_baseline_dir.set(chosen)
+
+    def _read_manifest_jsonl(self, path: Path):
+        data = {}
+        with path.open("r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                obj = json.loads(line)
+                data[obj["path"]] = obj
+        return data
+
+    def _do_system_baseline_create(self):
+        if sysanchor is None:
+            messagebox.showerror("System baseline", "anchor_system.py is missing or failed to import.")
+            return
+
+        seed = canonical_seed_from_text(self.seed_text)
+        try:
+            core.assert_24_words(core.normalize_seed(seed))
+        except Exception as e:
+            messagebox.showerror("Seed", str(e))
+            return
+
+        root_path = self.sys_root_var.get().strip() or "/"
+        out_dir = self.sys_baseline_dir.get().strip()
+        if not out_dir:
+            messagebox.showwarning("Baseline folder", "Choose a baseline folder first.")
+            return
+
+        outp = Path(out_dir)
+        outp.mkdir(parents=True, exist_ok=True)
+        manifest_path = outp / "baseline.manifest.jsonl"
+        proof_path = outp / "baseline.proof.json"
+
+        self._set_status("Building baseline manifest... (this can take a while)")
+        self.master.update_idletasks()
+
+        try:
+            manifest = sysanchor.build_manifest(root=root_path)
+            manifest_jsonl = sysanchor.manifest_to_jsonl(manifest)
+            manifest_sha = sysanchor.sha256_text(manifest_jsonl)
+            proof = core.create_manifest_proof(seed, manifest_sha, label=f"system:{root_path}")
+
+            manifest_path.write_text(manifest_jsonl, encoding="utf-8")
+            core.save_proof(proof, proof_path)
+
+            self._set_status(
+                "✅ Baseline created\n"
+                f"• Root: {root_path}\n"
+                f"• Files: {len(manifest)}\n"
+                f"• Manifest: {manifest_path}\n"
+                f"• Proof: {proof_path}"
+            )
+        except Exception as e:
+            self._set_status(f"❌ Baseline error: {e}")
+            messagebox.showerror("Baseline error", str(e))
+
+    def _do_system_baseline_verify(self):
+        if sysanchor is None:
+            messagebox.showerror("System baseline", "anchor_system.py is missing or failed to import.")
+            return
+
+        seed = canonical_seed_from_text(self.seed_text)
+        try:
+            core.assert_24_words(core.normalize_seed(seed))
+        except Exception as e:
+            messagebox.showerror("Seed", str(e))
+            return
+
+        root_path = self.sys_root_var.get().strip() or "/"
+        base_dir = self.sys_baseline_dir.get().strip()
+        if not base_dir:
+            messagebox.showwarning("Baseline folder", "Choose the baseline folder you created earlier.")
+            return
+
+        basep = Path(base_dir)
+        manifest_path = basep / "baseline.manifest.jsonl"
+        proof_path = basep / "baseline.proof.json"
+
+        if not manifest_path.exists() or not proof_path.exists():
+            messagebox.showerror(
+                "Baseline missing",
+                "baseline.manifest.jsonl and/or baseline.proof.json not found in the selected folder."
+            )
+            return
+
+        self._set_status("Verifying baseline... (rebuilding manifest)")
+        self.master.update_idletasks()
+
+        try:
+            baseline_manifest = self._read_manifest_jsonl(manifest_path)
+            proof = core.load_proof(proof_path)
+
+            current_manifest = sysanchor.build_manifest(root=root_path)
+            current_jsonl = sysanchor.manifest_to_jsonl(current_manifest)
+            current_sha = sysanchor.sha256_text(current_jsonl)
+
+            ok, msg = core.verify_manifest_proof(seed, current_sha, proof)
+
+            old = {
+                k: sysanchor.FileEntry(
+                    path=v["path"],
+                    sha256=v["sha256"],
+                    size=v.get("size", 0),
+                    mtime_ns=v.get("mtime_ns", 0),
+                    mode=v.get("mode", 0),
+                    uid=v.get("uid", 0),
+                    gid=v.get("gid", 0),
+                )
+                for k, v in baseline_manifest.items()
+            }
+            new = current_manifest
+
+            diff = sysanchor.diff_manifests(old, new)
+
+            pac = None
+            if platform.system() == "Linux":
+                try:
+                    pac = sysanchor.classify_changes_pacman(diff["modified"])
+                except Exception:
+                    pac = None
+
+            report = [
+                msg,
+                "",
+                f"Root: {root_path}",
+                f"Added: {len(diff['added'])}",
+                f"Removed: {len(diff['removed'])}",
+                f"Modified: {len(diff['modified'])}",
+            ]
+
+            if diff["added"]:
+                report.append("")
+                report.append("➕ Added (first 25):")
+                report += diff["added"][:25]
+
+            if diff["removed"]:
+                report.append("")
+                report.append("➖ Removed (first 25):")
+                report += diff["removed"][:25]
+
+            if diff["modified"]:
+                report.append("")
+                report.append("✏ Modified (first 25):")
+                report += diff["modified"][:25]
+
+            if pac is not None and diff["modified"]:
+                report.append("")
+                report.append("Pacman classification (modified):")
+                report.append(f"• Owned by package: {len(pac['owned_by_pkg'])}")
+                report.append(f"• Not owned (manual / unknown): {len(pac['not_owned'])}")
+
+            self._set_status("\n".join(report))
+            messagebox.showinfo("System verify", "Verification report written in the Status panel.")
+        except Exception as e:
+            self._set_status(f"❌ Verify error: {e}")
+            messagebox.showerror("Verify error", str(e))
 
     def _panel_status(self, parent):
         box = self._panel_box(parent, "Status")
-        self.status_text = tk.Text(
-            box, height=6, wrap="word",
-            bg=self.panel2, fg=self.text, relief="flat", font=self._font(11)
-        )
-        self.status_text.pack(fill="x", padx=14, pady=(8, 10))
-        self._set_status("Ready.")
 
-    # ---------------- actions ----------------
+        self.status_text = tk.Text(
+            box, height=9, wrap="word",
+            bg=self.panel2, fg=self.text, insertbackground=self.text,
+            relief="flat", font=self._font(11)
+        )
+        self.status_text.pack(fill="both", expand=True, padx=14, pady=(8, 12))
+        self._set_status("Ready.")
 
     def _set_status(self, msg: str):
         self.status_text.delete("1.0", "end")
@@ -354,214 +632,106 @@ class AnchorApp:
             "1) You paste your 24-word seed (never stored).\n"
             "2) You select a file.\n"
             "3) ANCHOR creates proof.json (file hash + HMAC signature).\n"
-            "4) VERIFY checks later: file + proof.json + seed must match.\n\n"
-            "Why it’s useful:\n"
-            "• Integrity: detect if a file changed by even 1 byte.\n"
-            "• Ownership/control: only the same seed can verify/control the proof.\n\n"
-            "Two real situations where Anchor helps:\n"
-            "1) Sending a proposal/contract draft:\n"
-            "   You can prove the exact version you sent on that date, even if a copy later gets edited.\n"
-            "2) Delivering a digital asset (design, report, dataset):\n"
-            "   You can prove the delivered file is the original, and detect any tampering after delivery.\n\n"
-            "Everything runs locally. No network. No seed storage."
+            "4) VERIFY checks the file still matches + your seed controls the proof.\n\n"
+            "New: System tab\n"
+            "• Create a baseline (manifest + proof) for a folder or system root and verify drift later.\n"
         )
-        messagebox.showinfo("What is Anchor?", text)
+        messagebox.showinfo("About Anchor", text)
 
     def _update_seed_fp(self):
         seed = canonical_seed_from_text(self.seed_text)
-        fp = core.seed_fingerprint(seed)
-        self.seed_fp_label.configure(text=f"Current seed fingerprint:  {fp}")
-
-    # --------- NEW: seed generation (BIP39 valid) ---------
+        if seed.strip():
+            fp = core.seed_fingerprint(seed)
+            self.seed_fp_label.configure(text=f"Current seed fingerprint: {fp}")
+        else:
+            self.seed_fp_label.configure(text="Current seed fingerprint: —")
 
     def _generate_seed(self):
-        """
-        Generates a valid BIP39 24-word mnemonic (english), fully offline.
-        256-bit entropy => 24 words.
-        """
-        try:
-            # Confirm to avoid accidental overwrite
-            if canonical_seed_from_text(self.seed_text).strip():
-                if not messagebox.askyesno(
-                    "Generate seed?",
-                    "This will replace the current seed in the box.\n\nGenerate a new 24-word seed now?"
-                ):
-                    return
-
-            mnemo = Mnemonic("english")
-            entropy = secrets.token_bytes(32)  # 256-bit
-            seed = mnemo.to_mnemonic(entropy)
-
-            # Safety check (checksum)
-            if not mnemo.check(seed):
-                raise ValueError("Generated seed failed BIP39 checksum (unexpected).")
-
-            self.seed_text.delete("1.0", "end")
-            self.seed_text.insert("1.0", seed)
-            self._update_seed_fp()
-
-            messagebox.showinfo(
-                "Seed generated",
-                "A new 24-word BIP39 seed was generated.\n\n"
-                "WRITE IT DOWN and keep it offline.\n"
-                "Anchor does NOT store your seed."
-            )
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to generate seed.\n\n{type(e).__name__}: {e}")
+        mnemo = Mnemonic("english")
+        entropy = secrets.token_bytes(32)  # 256-bit -> 24 words
+        seed = mnemo.to_mnemonic(entropy)
+        self.seed_text.delete("1.0", "end")
+        self.seed_text.insert("1.0", seed)
+        self._update_seed_fp()
 
     def _copy_seed(self):
-        seed = canonical_seed_from_text(self.seed_text).strip()
+        seed = canonical_seed_from_text(self.seed_text)
         if not seed:
-            messagebox.showerror("Error", "No seed to copy.")
+            messagebox.showwarning("Copy seed", "Seed is empty.")
             return
-        try:
-            self.root.clipboard_clear()
-            self.root.clipboard_append(seed)
-            self.root.update()
-            messagebox.showinfo(
-                "Copied",
-                "Seed copied to clipboard.\n\nBe careful: clipboard can be read by other apps."
-            )
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to copy seed.\n\n{type(e).__name__}: {e}")
-
-    # -----------------------------------------------------
+        self.master.clipboard_clear()
+        self.master.clipboard_append(seed)
+        messagebox.showinfo("Copy seed", "Seed copied to clipboard.")
 
     def _choose_file(self):
-        p = filedialog.askopenfilename(title="Choose file")
-        if not p:
+        path = filedialog.askopenfilename(title="Choose file")
+        if not path:
             return
-        self.file_path = p
-        self.file_label.configure(text=safe_basename(self.file_path))
-        self._set_status(f"File selected: {safe_basename(self.file_path)}")
+        self.file_path = path
+        self.file_label.configure(text=Path(path).name)
 
     def _load_proof(self):
-        p = filedialog.askopenfilename(
-            title="Load proof.json",
-            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
-        )
-        if not p:
+        path = filedialog.askopenfilename(title="Load proof.json", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+        if not path:
             return
         try:
-            proof = core.load_proof(p)
-        except Exception:
-            messagebox.showerror("Error", "Failed — could not load proof.json (invalid JSON).")
-            return
-
-        self.proof_path = p
-        self.proof_entry.delete(0, "end")
-        self.proof_entry.insert(0, p)
-        self.proof = proof
-
-        owner = proof.get("seed_fp", "—")
-        self.proof_owner_label.configure(text=f"Proof owner fingerprint:  {owner}")
-        self._set_status(f"Proof loaded: {safe_basename(self.proof_path)}\nOwner: {owner}")
+            self.proof = core.load_proof(path)
+            self.proof_path = path
+            self.proof_path_label.configure(text=path)
+            fp = self.proof.get("seed_fp", "—")
+            self.proof_fp_label.configure(text=fp)
+            self._set_status("Proof loaded.")
+        except Exception as e:
+            messagebox.showerror("Load proof", str(e))
 
     def _save_proof_as(self):
         if not self.proof:
-            messagebox.showerror("Error", "Failed — no proof in memory. Create or load a proof first.")
+            messagebox.showwarning("Save proof", "No proof loaded/created yet.")
             return
-        p = filedialog.asksaveasfilename(
-            title="Save proof as…",
+        path = filedialog.asksaveasfilename(
+            title="Save proof as",
             defaultextension=".json",
             filetypes=[("JSON files", "*.json")]
         )
-        if not p:
+        if not path:
             return
         try:
-            core.save_proof(self.proof, p)
-        except Exception:
-            messagebox.showerror("Error", "Failed — could not save proof.")
-            return
-        self.proof_path = p
-        self.proof_entry.delete(0, "end")
-        self.proof_entry.insert(0, p)
-        self._set_status(f"Proof saved: {safe_basename(self.proof_path)}")
+            core.save_proof(self.proof, path)
+            self.proof_path = path
+            self.proof_path_label.configure(text=path)
+            self._set_status(f"Proof saved: {path}")
+        except Exception as e:
+            messagebox.showerror("Save proof", str(e))
 
     def _do_anchor(self):
+        seed = canonical_seed_from_text(self.seed_text)
+        if not self.file_path:
+            messagebox.showwarning("Anchor", "Choose a file first.")
+            return
         try:
-            seed = canonical_seed_from_text(self.seed_text)
-            if not self.file_path:
-                messagebox.showerror("Error", "Failed — choose a file first.")
-                return
-
-            fn = getattr(core, "make_proof", None) or getattr(core, "create_proof", None)
-            proof = fn(seed, self.file_path)
-
+            proof = core.create_proof(seed, self.file_path)
             self.proof = proof
-            owner = proof.get("seed_fp", "—")
-            self.proof_owner_label.configure(text=f"Proof owner fingerprint:  {owner}")
-
-            p = filedialog.asksaveasfilename(
-                title="Save proof.json",
-                initialfile="proof.json",
-                defaultextension=".json",
-                filetypes=[("JSON files", "*.json")]
-            )
-            if not p:
-                self._set_status("Proof created in memory (not saved).")
-                return
-
-            core.save_proof(proof, p)
-            self.proof_path = p
-            self.proof_entry.delete(0, "end")
-            self.proof_entry.insert(0, p)
-
-            self._set_status(
-                f"Proof created ✅\nFile: {safe_basename(self.file_path)}\nSaved: {safe_basename(self.proof_path)}"
-            )
-            messagebox.showinfo("Anchor", "Proof created ✅")
+            self.proof_fp_label.configure(text=proof.get("seed_fp", "—"))
+            self._set_status("✅ Proof created. Use 'Save as...' to export proof.json.")
         except Exception as e:
-            messagebox.showerror("Error", "Failed — could not create proof. Use DIAGNOSE for details.")
-            self._set_status(f"Error: {type(e).__name__}")
+            self._set_status(f"❌ Anchor error: {e}")
+            messagebox.showerror("Anchor error", str(e))
 
     def _do_verify(self):
         seed = canonical_seed_from_text(self.seed_text)
-        proof_path = self.proof_entry.get().strip()
-
-        if proof_path and not self.proof:
-            try:
-                self.proof = core.load_proof(proof_path)
-                self.proof_path = proof_path
-            except Exception:
-                messagebox.showerror("Error", "Failed — could not load proof.json.")
-                return
-
         if not self.file_path:
-            messagebox.showerror("Error", "Failed — choose a file first.")
+            messagebox.showwarning("Verify", "Choose a file first.")
             return
         if not self.proof:
-            messagebox.showerror("Error", "Failed — load a proof.json first.")
+            messagebox.showwarning("Verify", "Load a proof.json first.")
             return
-
         ok, msg = core.verify(seed, self.file_path, self.proof)
-
-        if ok:
-            success = "Valid ✅ — The file is real."
-            self._set_status(success)
-            messagebox.showinfo("Verify", success)
-            return
-
-        # Never show hashes on hash mismatch
-        if "HASH MISMATCH" in msg or "hash" in msg.lower():
-            fail = "Failed ❌ — Hash doesn’t match."
-            self._set_status(fail)
-            messagebox.showerror("Verify", fail)
-            return
-
-        if "SIGNATURE INVALID" in msg:
-            fail = "Failed ❌ — Seed does not control this proof."
-            self._set_status(fail)
-            messagebox.showerror("Verify", fail)
-            return
-
-        fail = "Failed ❌ — Verification failed."
-        self._set_status(fail)
-        messagebox.showerror("Verify", fail)
+        self._set_status(msg)
+        messagebox.showinfo("Verify", msg)
 
     def _do_diagnose(self):
         seed = canonical_seed_from_text(self.seed_text)
-        proof_path = self.proof_entry.get().strip()
+        proof_path = self.proof_path if self.proof_path else None
         d = core.diagnose(seed, self.file_path, proof_path)
         pretty = json.dumps(d, indent=2, sort_keys=True)
         self._set_status(pretty)
