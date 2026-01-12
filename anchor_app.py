@@ -28,7 +28,6 @@ def canonical_seed_from_text(text_widget: tk.Text) -> str:
 def load_logo_scaled(path: Path, target_px: int = 64):
     try:
         img = tk.PhotoImage(file=str(path))
-        # If image bigger than target, subsample; if smaller, keep.
         w, h = img.width(), img.height()
         if w <= 0 or h <= 0:
             return None
@@ -76,7 +75,6 @@ class ScrollFrame(tk.Frame):
             widget.unbind_all("<Button-5>")
 
         def _on_mousewheel(event):
-            # Windows/macOS
             delta = -1 * int(event.delta / 120)
             self.canvas.yview_scroll(delta, "units")
 
@@ -125,6 +123,7 @@ class AnchorApp:
         self._update_seed_fp()
 
     def _font(self, size=12, weight="normal"):
+        # fallback-friendly
         return ("Avenir", size, weight)
 
     def _panel_box(self, parent, title: str):
@@ -160,7 +159,7 @@ class AnchorApp:
         right = tk.Frame(header, bg=self.bg)
         right.pack(side="right")
 
-        # Section tabs (top-right)  ✅ (esto es lo del rectángulo)
+        # Section tabs (top-right)
         tabs = tk.Frame(right, bg=self.bg)
         tabs.pack(side="left", padx=(0, 14))
 
@@ -180,6 +179,15 @@ class AnchorApp:
         )
         self.tab_btn_system.pack(side="left", padx=(8, 0))
 
+        # ✅ NEW: Questions / FAQ tab
+        self.tab_btn_questions = tk.Button(
+            tabs, text="Questions", command=lambda: self._show_section("Questions"),
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
+            relief="flat", padx=12, pady=7, font=self._font(11, "bold")
+        )
+        self.tab_btn_questions.pack(side="left", padx=(8, 0))
+
         chk = tk.Checkbutton(
             right, text="Safe mode", variable=self.safe_mode,
             bg=self.bg, fg=self.muted, activebackground=self.bg, activeforeground=self.muted,
@@ -188,7 +196,7 @@ class AnchorApp:
         chk.pack(side="left", padx=(0, 12))
 
         info = tk.Button(
-            right, text="What is Anchor?", command=self._show_info,
+            right, text="What is Anchor?", command=lambda: self._show_section("Questions"),
             bg=self.panel2, fg=self.btn_text_on_white,
             activebackground=self.panel2, activeforeground=self.btn_text_on_white,
             relief="flat", padx=12, pady=8, font=self._font(12, "bold")
@@ -202,45 +210,68 @@ class AnchorApp:
 
         self.file_section = tk.Frame(self.section_container, bg=self.bg)
         self.system_section = tk.Frame(self.section_container, bg=self.bg)
+        self.questions_section = tk.Frame(self.section_container, bg=self.bg)
+
         self.file_section.grid(row=0, column=0, sticky="nsew")
         self.system_section.grid(row=0, column=0, sticky="nsew")
+        self.questions_section.grid(row=0, column=0, sticky="nsew")
 
-        # File section (original)
+        # File section
         self._panel_seed(self.file_section)
         self._panel_file_proof(self.file_section)
         self._panel_actions(self.file_section)
         self._panel_status(self.file_section)
 
-        # System section (new)
+        # System section
         self._panel_system(self.system_section)
+        # Reuse the same Status panel widget even on System tab (so user sees reports)
+        self._panel_status(self.system_section)
+
+        # Questions section
+        self._panel_questions(self.questions_section)
 
         # Default view
         self._show_section("File")
 
+    def _set_tab_active(self, which: str):
+        def inactive(btn: tk.Button):
+            btn.configure(
+                bg=self.panel2, fg=self.btn_text_on_white,
+                activebackground=self.panel2, activeforeground=self.btn_text_on_white
+            )
+
+        def active(btn: tk.Button):
+            btn.configure(
+                bg=self.accent, fg=self.accent_fg,
+                activebackground=self.accent, activeforeground=self.accent_fg
+            )
+
+        inactive(self.tab_btn_file)
+        inactive(self.tab_btn_system)
+        inactive(self.tab_btn_questions)
+
+        if which == "System":
+            active(self.tab_btn_system)
+        elif which == "Questions":
+            active(self.tab_btn_questions)
+        else:
+            active(self.tab_btn_file)
+
     def _show_section(self, name: str):
-        """Switch between top-level sections (File / System)."""
+        """Switch between top-level sections (File / System / Questions)."""
         self.section.set(name)
+        self._set_tab_active(name)
 
         if name == "System":
             self.system_section.tkraise()
-            self.tab_btn_file.configure(
-                bg=self.panel2, fg=self.btn_text_on_white,
-                activebackground=self.panel2, activeforeground=self.btn_text_on_white
-            )
-            self.tab_btn_system.configure(
-                bg=self.accent, fg=self.accent_fg,
-                activebackground=self.accent, activeforeground=self.accent_fg
-            )
+        elif name == "Questions":
+            self.questions_section.tkraise()
         else:
             self.file_section.tkraise()
-            self.tab_btn_system.configure(
-                bg=self.panel2, fg=self.btn_text_on_white,
-                activebackground=self.panel2, activeforeground=self.btn_text_on_white
-            )
-            self.tab_btn_file.configure(
-                bg=self.accent, fg=self.accent_fg,
-                activebackground=self.accent, activeforeground=self.accent_fg
-            )
+
+    # ----------------------------
+    # FILE TAB PANELS
+    # ----------------------------
 
     def _panel_seed(self, parent):
         box = self._panel_box(parent, "1) Seed (24 words)")
@@ -364,15 +395,15 @@ class AnchorApp:
         btn_diag.pack(side="left", padx=(12, 0))
 
     # ----------------------------
-    # System baseline (Linux/Arch)
+    # SYSTEM TAB PANELS
     # ----------------------------
 
     def _panel_system(self, parent):
         box = self._panel_box(parent, "System (baseline + verify)")
 
         hint = (
-            "Create a reproducible baseline of a folder (or / on Linux) and verify drift over time.\n"
-            "On Windows this section is limited; on Linux/Arch you can baseline '/'."
+            "Create a reproducible baseline of a folder and verify drift over time.\n"
+            "On Windows this section is limited; on Linux/Arch you can baseline '/' (excluding virtual filesystems)."
         )
         tk.Label(box, text=hint, fg=self.muted, bg=self.panel, justify="left", font=self._font(11)).pack(
             anchor="w", padx=14, pady=(8, 10)
@@ -438,7 +469,6 @@ class AnchorApp:
 
         if sysanchor is None:
             self.sys_root_entry.configure(state="disabled")
-            # no status panel yet if user starts on System tab; that's ok.
 
     def _browse_sys_root(self):
         chosen = filedialog.askdirectory(title="Choose root folder to baseline")
@@ -565,15 +595,8 @@ class AnchorApp:
 
             diff = sysanchor.diff_manifests(old, new)
 
-            pac = None
-            if platform.system() == "Linux":
-                try:
-                    pac = sysanchor.classify_changes_pacman(diff["modified"])
-                except Exception:
-                    pac = None
-
             report = [
-                msg,
+                ("✅ OK: " if ok else "❌ FAIL: ") + msg,
                 "",
                 f"Root: {root_path}",
                 f"Added: {len(diff['added'])}",
@@ -596,17 +619,162 @@ class AnchorApp:
                 report.append("✏ Modified (first 25):")
                 report += diff["modified"][:25]
 
-            if pac is not None and diff["modified"]:
-                report.append("")
-                report.append("Pacman classification (modified):")
-                report.append(f"• Owned by package: {len(pac['owned_by_pkg'])}")
-                report.append(f"• Not owned (manual / unknown): {len(pac['not_owned'])}")
-
             self._set_status("\n".join(report))
             messagebox.showinfo("System verify", "Verification report written in the Status panel.")
         except Exception as e:
             self._set_status(f"❌ Verify error: {e}")
             messagebox.showerror("Verify error", str(e))
+
+    # ----------------------------
+    # QUESTIONS / FAQ TAB
+    # ----------------------------
+
+    def _panel_questions(self, parent):
+        intro = self._panel_box(parent, "Questions / Basic guide")
+        tk.Label(
+            intro,
+            text=(
+                "This tab explains each section and the correct workflow.\n"
+                "Anchor is fully offline: no accounts, no servers, no network."
+            ),
+            fg=self.muted, bg=self.panel, justify="left", font=self._font(11)
+        ).pack(anchor="w", padx=14, pady=(8, 12))
+
+        # Quick workflow
+        box = self._panel_box(parent, "Recommended workflow (File)")
+        txt = (
+            "1) Seed (24 words)\n"
+            "   • Paste your 24-word seed.\n"
+            "   • It is NOT stored; it only lives in memory while the app is open.\n"
+            "\n"
+            "2) Choose file\n"
+            "   • Pick the file you want to anchor.\n"
+            "\n"
+            "3) ANCHOR\n"
+            "   • Creates a proof in memory (proof.json data).\n"
+            "   • Then press “Save as...” to export the proof.json where you want.\n"
+            "\n"
+            "4) VERIFY (later)\n"
+            "   • Choose the same file.\n"
+            "   • Load the proof.json.\n"
+            "   • Press VERIFY → it checks:\n"
+            "     - the file hash matches\n"
+            "     - your seed controls the signature (ownership)\n"
+        )
+        tk.Label(box, text=txt, fg=self.text, bg=self.panel, justify="left", font=self._font(11)).pack(
+            anchor="w", padx=14, pady=(8, 12)
+        )
+
+        # Seed details
+        box = self._panel_box(parent, "What is the seed fingerprint?")
+        txt = (
+            "• The seed fingerprint is a short ID derived from your seed.\n"
+            "• It helps you quickly see if a proof belongs to your seed.\n"
+            "• Sharing the fingerprint is safer than sharing the seed.\n"
+            "\n"
+            "IMPORTANT:\n"
+            "• If you lose the seed, you lose control of the proofs.\n"
+            "• Anchor is for personal verification, not third-party trust."
+        )
+        tk.Label(box, text=txt, fg=self.text, bg=self.panel, justify="left", font=self._font(11)).pack(
+            anchor="w", padx=14, pady=(8, 12)
+        )
+
+        # Proof details
+        box = self._panel_box(parent, "What is proof.json?")
+        txt = (
+            "proof.json contains:\n"
+            "• file_name\n"
+            "• commitment = SHA-256(file bytes)\n"
+            "• signature = HMAC-SHA256(key derived from seed, data=commitment)\n"
+            "• seed_fp (fingerprint)\n"
+            "• created_at\n"
+            "\n"
+            "So it proves: “this exact file state existed, and my seed controls the proof”."
+        )
+        tk.Label(box, text=txt, fg=self.text, bg=self.panel, justify="left", font=self._font(11)).pack(
+            anchor="w", padx=14, pady=(8, 12)
+        )
+
+        # Diagnose
+        box = self._panel_box(parent, "What does DIAGNOSE do?")
+        txt = (
+            "DIAGNOSE is a debug helper.\n"
+            "It prints a JSON with:\n"
+            "• file status (exists / hash)\n"
+            "• seed word count\n"
+            "• proof commitment/signature (if a proof path is provided)\n"
+            "• expected signature (from your seed)\n"
+            "\n"
+            "Use it when VERIFY fails and you want to understand why."
+        )
+        tk.Label(box, text=txt, fg=self.text, bg=self.panel, justify="left", font=self._font(11)).pack(
+            anchor="w", padx=14, pady=(8, 12)
+        )
+
+        # System mode
+        box = self._panel_box(parent, "System tab (baseline)")
+        txt = (
+            "System mode creates a reproducible baseline for a folder:\n"
+            "• baseline.manifest.jsonl (deterministic list of file hashes)\n"
+            "• baseline.proof.json (anchor proof of the manifest SHA-256)\n"
+            "\n"
+            "Workflow:\n"
+            "1) Put your seed (same as File tab).\n"
+            "2) Choose Root path (folder to scan).\n"
+            "3) Choose Baseline folder (where to store baseline.* files).\n"
+            "4) CREATE BASELINE.\n"
+            "5) Later: VERIFY BASELINE to detect added/removed/modified files.\n"
+            "\n"
+            "Notes:\n"
+            "• On Windows, use it for user folders (Documents/Desktop/etc.).\n"
+            "• On Linux, you can baseline '/', excluding virtual filesystems."
+        )
+        tk.Label(box, text=txt, fg=self.text, bg=self.panel, justify="left", font=self._font(11)).pack(
+            anchor="w", padx=14, pady=(8, 12)
+        )
+
+        # Common problems
+        box = self._panel_box(parent, "Common problems (quick fixes)")
+        txt = (
+            "❌ “Seed must contain exactly 24 words”\n"
+            "• Make sure you pasted 24 words exactly.\n"
+            "• Extra spaces/newlines are OK; Anchor normalizes whitespace.\n"
+            "\n"
+            "❌ “HASH MISMATCH”\n"
+            "• The file changed (even 1 byte).\n"
+            "• Make sure you selected the same file you anchored.\n"
+            "\n"
+            "❌ “SIGNATURE INVALID”\n"
+            "• You used a different seed than the one that created the proof.\n"
+            "• Compare seed fingerprint vs proof fingerprint.\n"
+        )
+        tk.Label(box, text=txt, fg=self.text, bg=self.panel, justify="left", font=self._font(11)).pack(
+            anchor="w", padx=14, pady=(8, 12)
+        )
+
+        # Quick jump buttons
+        box = self._panel_box(parent, "Quick jump")
+        row = tk.Frame(box, bg=self.panel)
+        row.pack(fill="x", padx=14, pady=(10, 12))
+
+        tk.Button(
+            row, text="Go to File", command=lambda: self._show_section("File"),
+            bg=self.accent, fg=self.accent_fg,
+            activebackground=self.accent, activeforeground=self.accent_fg,
+            relief="flat", padx=12, pady=10, font=self._font(11, "bold")
+        ).pack(side="left")
+
+        tk.Button(
+            row, text="Go to System", command=lambda: self._show_section("System"),
+            bg=self.panel2, fg=self.btn_text_on_white,
+            activebackground=self.panel2, activeforeground=self.btn_text_on_white,
+            relief="flat", padx=12, pady=10, font=self._font(11, "bold")
+        ).pack(side="left", padx=(10, 0))
+
+    # ----------------------------
+    # STATUS (used in File + System)
+    # ----------------------------
 
     def _panel_status(self, parent):
         box = self._panel_box(parent, "Status")
@@ -617,26 +785,23 @@ class AnchorApp:
             relief="flat", font=self._font(11)
         )
         self.status_text.pack(fill="both", expand=True, padx=14, pady=(8, 12))
-        self._set_status("Ready.")
+
+        # Don’t overwrite if already exists (System creates later)
+        if not self.status_text.get("1.0", "end").strip():
+            self._set_status("Ready.")
+        else:
+            self._set_status("Ready.")
 
     def _set_status(self, msg: str):
-        self.status_text.delete("1.0", "end")
-        self.status_text.insert("1.0", msg)
+        try:
+            self.status_text.delete("1.0", "end")
+            self.status_text.insert("1.0", msg)
+        except Exception:
+            pass
 
-    def _show_info(self):
-        text = (
-            "What is Anchor?\n"
-            "Anchor is a local tool that creates a cryptographic proof (proof.json) that a file existed\n"
-            "in an exact state at a specific time — and that you control that proof using your 24-word seed.\n\n"
-            "How it works (simple):\n"
-            "1) You paste your 24-word seed (never stored).\n"
-            "2) You select a file.\n"
-            "3) ANCHOR creates proof.json (file hash + HMAC signature).\n"
-            "4) VERIFY checks the file still matches + your seed controls the proof.\n\n"
-            "New: System tab\n"
-            "• Create a baseline (manifest + proof) for a folder or system root and verify drift later.\n"
-        )
-        messagebox.showinfo("About Anchor", text)
+    # ----------------------------
+    # Helpers / Actions
+    # ----------------------------
 
     def _update_seed_fp(self):
         seed = canonical_seed_from_text(self.seed_text)
@@ -671,7 +836,10 @@ class AnchorApp:
         self.file_label.configure(text=Path(path).name)
 
     def _load_proof(self):
-        path = filedialog.askopenfilename(title="Load proof.json", filetypes=[("JSON files", "*.json"), ("All files", "*.*")])
+        path = filedialog.askopenfilename(
+            title="Load proof.json",
+            filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
+        )
         if not path:
             return
         try:
